@@ -62,6 +62,22 @@ expect(
 const moved = Sweep.checkAll(needles, [circles[0], circles[1], { x: 600, y: 130, r: 10 }]);
 expect('移开保护圆后整体安全', moved.safe && moved.firstConflict === null);
 
+// 动态场景：补录旋转时长与晕染扩张量，扩张中的圆吞没原本安全的扇区
+const dynNeedles = [
+  { x: 0, y: 0, len: 100, a0: 0, a1: 90, dir: 'ccw', dur: 10 },
+  { x: 600, y: 0, len: 100, a0: 0, a1: 90, dir: 'ccw', dur: 10 },
+];
+const dynCircles = [{ x: 0, y: 200, r: 90, grow: 1 }];
+// 静态（扩张量为零）：净距 = 200-100-90 = 10，安全放行
+const dynStatic = Sweep.checkAll(dynNeedles, [{ x: 0, y: 200, r: 90, grow: 0 }]);
+expect('零扩张草稿保持静态放行', dynStatic.safe && approx(dynStatic.results[0].minClearance, 10));
+// 动态：r(10)=100，第 10 秒针至 90° 时圆恰好扩张到针尖处
+const dyn = Sweep.checkAll(dynNeedles, dynCircles);
+expect('晕染扩张后首项冲突落在针1', dyn.firstConflict && dyn.firstConflict.needle === 0 && dyn.firstConflict.circle === 0);
+expect('首次触及为第 10 秒', dyn.firstConflict && approx(dyn.firstConflict.seconds, 10, 1e-6));
+expect('首次触及角为 90°', dyn.firstConflict && approx(dyn.firstConflict.angleDeg, 90, 1e-6));
+expect('远离晕染圆的针2 仍安全', dyn.results[1].safe);
+
 if (!ok) {
   console.error('烟测失败');
   process.exit(1);

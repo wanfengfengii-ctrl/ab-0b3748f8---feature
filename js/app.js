@@ -18,10 +18,10 @@
 
   const defaultState = () => ({
     needles: [
-      { x: 170, y: 150, len: 150, a0: 15, a1: 85, dir: 'ccw' },
-      { x: 580, y: 160, len: 130, a0: 165, a1: 95, dir: 'cw' },
+      { x: 170, y: 150, len: 150, a0: 15, a1: 85, dir: 'ccw', dur: 0 },
+      { x: 580, y: 160, len: 130, a0: 165, a1: 95, dir: 'cw', dur: 0 },
     ],
-    circles: [{ x: 380, y: 330, r: 45 }],
+    circles: [{ x: 380, y: 330, r: 45, grow: 0 }],
     result: null,
   });
 
@@ -67,7 +67,7 @@
       const refs = {};
       [
         ['支点x', 'x'], ['支点y', 'y'], ['针长', 'len'],
-        ['起始角°', 'a0'], ['终止角°', 'a1'],
+        ['起始角°', 'a0'], ['终止角°', 'a1'], ['时长(秒)', 'dur'],
       ].forEach(([text, k]) => {
         const { label, el } = makeField(text, k, n[k], false);
         refs[k] = el;
@@ -110,7 +110,7 @@
       legend.textContent = `保护圆 #${j + 1}`;
       fs.appendChild(legend);
       const refs = {};
-      [['圆心x', 'x'], ['圆心y', 'y'], ['半径', 'r']].forEach(([text, k]) => {
+      [['圆心x', 'x'], ['圆心y', 'y'], ['半径', 'r'], ['晕染/秒', 'grow']].forEach(([text, k]) => {
         const { label, el } = makeField(text, k, c[k], false);
         refs[k] = el;
         fs.appendChild(label);
@@ -147,7 +147,7 @@
     state.needles.forEach((n, i) => {
       const refs = needleInputs[i];
       if (!refs) return;
-      ['x', 'y', 'len', 'a0', 'a1'].forEach((k) => {
+      ['x', 'y', 'len', 'a0', 'a1', 'dur'].forEach((k) => {
         refs[k].value = Math.round(n[k] * 100) / 100;
       });
       refs.dir.value = n.dir;
@@ -155,7 +155,7 @@
     state.circles.forEach((c, j) => {
       const refs = circleInputs[j];
       if (!refs) return;
-      ['x', 'y', 'r'].forEach((k) => {
+      ['x', 'y', 'r', 'grow'].forEach((k) => {
         refs[k].value = Math.round(c[k] * 100) / 100;
       });
     });
@@ -299,9 +299,20 @@
     drawGrid();
     const res = state.result;
     state.needles.forEach((n, i) => drawNeedle(n, i, res ? res.results[i] : null));
+    const fc = res && res.firstConflict;
     state.circles.forEach((c, j) => {
-      const inConflict = !!(res && res.firstConflict && res.firstConflict.circle === j);
+      const inConflict = !!(fc && fc.circle === j);
       drawCircle(c, j, inConflict);
+      // 动态晕染：虚线画出首次触及瞬间扩张后的圆轮廓，便于复核触及瞬间
+      if (inConflict && res.results[fc.needle].dynamic && c.grow > 0) {
+        ctx.beginPath();
+        ctx.setLineDash([6, 4]);
+        ctx.arc(c.x, cy(c.y), c.r + c.grow * fc.seconds, 0, TAU);
+        ctx.strokeStyle = '#d40f22';
+        ctx.lineWidth = 1.5;
+        ctx.stroke();
+        ctx.setLineDash([]);
+      }
     });
   }
 
@@ -397,31 +408,41 @@
     const res = state.result;
     box.innerHTML = '';
     if (!res) return;
+    const anyDynamic = res.results.some((r) => r.dynamic);
     const summary = document.createElement('div');
     if (res.safe) {
       summary.className = 'ok';
-      summary.textContent = '✅ 校核通过：所有针的扫掠区域与保护圆均保持安全净距。';
+      summary.textContent = anyDynamic
+        ? '✅ 校核通过：所有针的扫掠全过程与动态扩张的保护圆均保持安全净距。'
+        : '✅ 校核通过：所有针的扫掠区域与保护圆均保持安全净距。';
     } else {
       const f = res.firstConflict;
+      const dyn = res.results[f.needle] && res.results[f.needle].dynamic;
       summary.className = 'bad';
-      summary.textContent =
-        `⚠️ 首项冲突：针 #${f.needle + 1} 旋转至 ${f.angleDeg.toFixed(2)}° 时` +
-        `首次触及保护圆 #${f.circle + 1}。`;
+      summary.textContent = dyn
+        ? `⚠️ 首项冲突：针 #${f.needle + 1} 在第 ${f.seconds.toFixed(2)} 秒旋转至 ` +
+          `${f.angleDeg.toFixed(2)}° 时首次触及保护圆 #${f.circle + 1}（晕染已扩张）。`
+        : `⚠️ 首项冲突：针 #${f.needle + 1} 旋转至 ${f.angleDeg.toFixed(2)}° 时` +
+          `首次触及保护圆 #${f.circle + 1}。`;
     }
     box.appendChild(summary);
     res.results.forEach((r, i) => {
       const line = document.createElement('div');
       if (r.safe) {
         line.className = 'ok item';
-        line.textContent =
-          `针 #${i + 1}：安全，最小净距 ${r.minClearance.toFixed(2)}` +
-          `（相对保护圆 #${r.minClearanceCircle + 1}）`;
+        line.textContent = r.dynamic
+          ? `针 #${i + 1}：安全，全过程最小动态净距 ${r.minClearance.toFixed(2)}` +
+            `（相对保护圆 #${r.minClearanceCircle + 1}）`
+          : `针 #${i + 1}：安全，最小净距 ${r.minClearance.toFixed(2)}` +
+            `（相对保护圆 #${r.minClearanceCircle + 1}）`;
       } else {
         const t = r.firstTouch;
         line.className = 'bad item';
-        line.textContent =
-          `针 #${i + 1}：风险，首次触及角度 ${t.angleDeg.toFixed(2)}°` +
-          `（保护圆 #${t.circle + 1}），最小净距 ${r.minClearance.toFixed(2)}`;
+        line.textContent = r.dynamic
+          ? `针 #${i + 1}：风险，第 ${t.seconds.toFixed(2)} 秒旋转至 ${t.angleDeg.toFixed(2)}°` +
+            ` 首次触及保护圆 #${t.circle + 1}，最小动态净距 ${r.minClearance.toFixed(2)}`
+          : `针 #${i + 1}：风险，首次触及角度 ${t.angleDeg.toFixed(2)}°` +
+            `（保护圆 #${t.circle + 1}），最小净距 ${r.minClearance.toFixed(2)}`;
       }
       box.appendChild(line);
     });
@@ -438,6 +459,7 @@
       a0: 20,
       a1: 80,
       dir: 'ccw',
+      dur: 0,
     });
     state.result = null;
     renderForms();
@@ -450,6 +472,7 @@
       x: 150 + state.circles.length * 80,
       y: 380,
       r: 35,
+      grow: 0,
     });
     state.result = null;
     renderForms();
