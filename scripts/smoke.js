@@ -62,6 +62,57 @@ expect(
 const moved = Sweep.checkAll(needles, [circles[0], circles[1], { x: 600, y: 130, r: 10 }]);
 expect('移开保护圆后整体安全', moved.safe && moved.firstConflict === null);
 
+// ---- 动态晕染：补录旋转时长与每秒扩张量 ----
+// 扩张量全为零的历史草稿：补录时长后结论必须与既有静态结果一致
+const timedNeedles = needles.map((n) => ({ ...n, duration: 10 }));
+const zeroGrowth = Sweep.checkAll(timedNeedles, circles.map((c) => ({ ...c, growth: 0 })));
+expect(
+  '扩张量全为零时保持既有静态结果',
+  zeroGrowth.results.every((r, i) => r.safe === res.results[i].safe && approx(r.minClearance, res.results[i].minClearance, 1e-9)) &&
+    zeroGrowth.firstConflict !== null &&
+    zeroGrowth.firstConflict.needle === res.firstConflict.needle &&
+    approx(zeroGrowth.firstConflict.angleDeg, res.firstConflict.angleDeg, 1e-6)
+);
+
+// 保护圆2 以 3/秒 晕染扩张：原本静态安全（净距 10）的针2 在旋转中被吞没
+const dyn = Sweep.checkAll(timedNeedles, [circles[0], { ...circles[1], growth: 3 }, circles[2]]);
+console.log(
+  '动态结果:',
+  JSON.stringify(
+    dyn.results.map((r) => ({
+      safe: r.safe,
+      minClearance: +r.minClearance.toFixed(4),
+      firstTouchDeg: r.firstTouch ? +r.firstTouch.angleDeg.toFixed(4) : null,
+      firstTouchSec: r.firstTouch ? +r.firstTouch.timeSec.toFixed(4) : null,
+    })),
+    null,
+    2
+  )
+);
+expect('针1动态下仍安全', dyn.results[0].safe);
+expect('针2被扩张的晕染圈吞没', !dyn.results[1].safe);
+// 针2：圆 (300,130) r=20+3t，针长 100，全程 10 秒；触及发生在 8~8.5 秒之间（连续判定给出可复核瞬间）
+expect(
+  '针2首次触及时刻落在 8~8.5 秒',
+  dyn.results[1].firstTouch && dyn.results[1].firstTouch.timeSec > 8 && dyn.results[1].firstTouch.timeSec < 8.5
+);
+expect(
+  '针2首次触及角与时刻自洽（180° − 9°/s × t）',
+  dyn.results[1].firstTouch && approx(dyn.results[1].firstTouch.angleDeg, 180 - 9 * dyn.results[1].firstTouch.timeSec, 1e-6)
+);
+// 终止瞬间圆心正对针身：净距 = (130-100) - (20+3×10) = -20
+expect('针2全过程最小动态净距 = -20', approx(dyn.results[1].minClearance, -20));
+// 针3 的触及圆扩张量为 0：触及角与静态闭式解一致
+expect('针3动态触及角保持静态闭式解', dyn.results[2].firstTouch && approx(dyn.results[2].firstTouch.angleDeg, 90 - beta));
+expect('针3触及时刻 = 偏移占比 × 10 秒', approx(dyn.results[2].firstTouch.timeSec, ((90 - beta) / 90) * 10));
+expect(
+  '动态首项冲突为针2 / 保护圆2（按录入顺序）',
+  dyn.firstConflict && dyn.firstConflict.needle === 1 && dyn.firstConflict.circle === 1
+);
+// 扩张量调回 0：结论恢复静态放行/风险格局
+const reverted = Sweep.checkAll(timedNeedles, circles.map((c) => ({ ...c, growth: 0 })));
+expect('扩张量调回零后恢复既有静态结论', reverted.results[1].safe && approx(reverted.results[1].minClearance, 10, 1e-9));
+
 if (!ok) {
   console.error('烟测失败');
   process.exit(1);

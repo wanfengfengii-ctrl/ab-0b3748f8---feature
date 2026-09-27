@@ -18,10 +18,10 @@
 
   const defaultState = () => ({
     needles: [
-      { x: 170, y: 150, len: 150, a0: 15, a1: 85, dir: 'ccw' },
-      { x: 580, y: 160, len: 130, a0: 165, a1: 95, dir: 'cw' },
+      { x: 170, y: 150, len: 150, a0: 15, a1: 85, dir: 'ccw', duration: 0 },
+      { x: 580, y: 160, len: 130, a0: 165, a1: 95, dir: 'cw', duration: 0 },
     ],
-    circles: [{ x: 380, y: 330, r: 45 }],
+    circles: [{ x: 380, y: 330, r: 45, growth: 0 }],
     result: null,
   });
 
@@ -67,7 +67,7 @@
       const refs = {};
       [
         ['支点x', 'x'], ['支点y', 'y'], ['针长', 'len'],
-        ['起始角°', 'a0'], ['终止角°', 'a1'],
+        ['起始角°', 'a0'], ['终止角°', 'a1'], ['旋转时长s', 'duration'],
       ].forEach(([text, k]) => {
         const { label, el } = makeField(text, k, n[k], false);
         refs[k] = el;
@@ -80,6 +80,7 @@
         el.addEventListener('input', () => {
           const k = el.dataset.k;
           if (k === 'dir') n.dir = el.value;
+          else if (k === 'duration') n.duration = el.value === '' ? 0 : parseFloat(el.value);
           else n[k] = parseFloat(el.value);
           state.result = null;
           draw();
@@ -110,14 +111,15 @@
       legend.textContent = `保护圆 #${j + 1}`;
       fs.appendChild(legend);
       const refs = {};
-      [['圆心x', 'x'], ['圆心y', 'y'], ['半径', 'r']].forEach(([text, k]) => {
+      [['圆心x', 'x'], ['圆心y', 'y'], ['半径', 'r'], ['晕染扩张/秒', 'growth']].forEach(([text, k]) => {
         const { label, el } = makeField(text, k, c[k], false);
         refs[k] = el;
         fs.appendChild(label);
       });
       Object.values(refs).forEach((el) => {
         el.addEventListener('input', () => {
-          c[el.dataset.k] = parseFloat(el.value);
+          const k = el.dataset.k;
+          c[k] = k === 'growth' && el.value === '' ? 0 : parseFloat(el.value);
           state.result = null;
           draw();
         });
@@ -147,7 +149,7 @@
     state.needles.forEach((n, i) => {
       const refs = needleInputs[i];
       if (!refs) return;
-      ['x', 'y', 'len', 'a0', 'a1'].forEach((k) => {
+      ['x', 'y', 'len', 'a0', 'a1', 'duration'].forEach((k) => {
         refs[k].value = Math.round(n[k] * 100) / 100;
       });
       refs.dir.value = n.dir;
@@ -155,7 +157,7 @@
     state.circles.forEach((c, j) => {
       const refs = circleInputs[j];
       if (!refs) return;
-      ['x', 'y', 'r'].forEach((k) => {
+      ['x', 'y', 'r', 'growth'].forEach((k) => {
         refs[k].value = Math.round(c[k] * 100) / 100;
       });
     });
@@ -229,7 +231,7 @@
     ctx.lineWidth = 3;
     ctx.stroke();
 
-    // 首次触及位置（红色针身 + 触及点）
+    // 首次触及位置（红色针身 + 触及点 + 触及瞬间的晕染半径）
     if (res && res.firstTouch) {
       const ft = res.firstTouch;
       const ta = (ft.angleDeg * Math.PI) / 180;
@@ -248,6 +250,17 @@
         ctx.arc(hit.x, cy(hit.y), 5, 0, TAU);
         ctx.fillStyle = '#d40f22';
         ctx.fill();
+        const g = Number.isFinite(c.growth) && c.growth > 0 ? c.growth : 0;
+        if (g > 0 && ft.timeSec > 0) {
+          // 触及瞬间的动态半径（录入半径 + 每秒扩张量 × 触及时刻），供复核
+          ctx.beginPath();
+          ctx.setLineDash([6, 4]);
+          ctx.arc(c.x, cy(c.y), c.r + g * ft.timeSec, 0, TAU);
+          ctx.strokeStyle = '#d40f22';
+          ctx.lineWidth = 1.5;
+          ctx.stroke();
+          ctx.setLineDash([]);
+        }
       }
     }
 
@@ -400,13 +413,13 @@
     const summary = document.createElement('div');
     if (res.safe) {
       summary.className = 'ok';
-      summary.textContent = '✅ 校核通过：所有针的扫掠区域与保护圆均保持安全净距。';
+      summary.textContent = '✅ 校核通过：所有针的扫掠全过程与保护圆（含晕染扩张）均保持安全净距。';
     } else {
       const f = res.firstConflict;
       summary.className = 'bad';
       summary.textContent =
-        `⚠️ 首项冲突：针 #${f.needle + 1} 旋转至 ${f.angleDeg.toFixed(2)}° 时` +
-        `首次触及保护圆 #${f.circle + 1}。`;
+        `⚠️ 首项冲突：针 #${f.needle + 1} 旋转至 ${f.angleDeg.toFixed(2)}°` +
+        `（第 ${f.timeSec.toFixed(2)} 秒）时首次触及保护圆 #${f.circle + 1}。`;
     }
     box.appendChild(summary);
     res.results.forEach((r, i) => {
@@ -414,14 +427,15 @@
       if (r.safe) {
         line.className = 'ok item';
         line.textContent =
-          `针 #${i + 1}：安全，最小净距 ${r.minClearance.toFixed(2)}` +
+          `针 #${i + 1}：安全，全过程最小动态净距 ${r.minClearance.toFixed(2)}` +
           `（相对保护圆 #${r.minClearanceCircle + 1}）`;
       } else {
         const t = r.firstTouch;
         line.className = 'bad item';
         line.textContent =
           `针 #${i + 1}：风险，首次触及角度 ${t.angleDeg.toFixed(2)}°` +
-          `（保护圆 #${t.circle + 1}），最小净距 ${r.minClearance.toFixed(2)}`;
+          `（保护圆 #${t.circle + 1}，第 ${t.timeSec.toFixed(2)} 秒），` +
+          `全过程最小动态净距 ${r.minClearance.toFixed(2)}`;
       }
       box.appendChild(line);
     });
@@ -438,6 +452,7 @@
       a0: 20,
       a1: 80,
       dir: 'ccw',
+      duration: 0,
     });
     state.result = null;
     renderForms();
@@ -450,6 +465,7 @@
       x: 150 + state.circles.length * 80,
       y: 380,
       r: 35,
+      growth: 0,
     });
     state.result = null;
     renderForms();
